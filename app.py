@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
-import requests
 import streamlit.components.v1 as components
 
 # 1. PAGE CONFIGURATION
@@ -14,60 +13,32 @@ st.set_page_config(
 
 st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
 
-# 2. CREDENTIALS & API SETUP
-API_TOKEN = "558c639f2c31d384271394486b678df92f28a341"
-ASSET_UID = "azi42PaQTVCKXoD4dBA2o4"
+# 2. FILE UPLOADER SIDEBAR
+st.sidebar.header("⚙️ Data Import")
+uploaded_file = st.sidebar.file_uploader(
+    "Upload Kobo Dataset (.xlsx or .csv)", 
+    type=["xlsx", "xls", "csv"]
+)
 
-# Comprehensive endpoint candidate list covering API v2, KPI submissions, and API v1 endpoints
-ENDPOINTS = [
-    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data/v1/submits/",
-    f"https://kc.kobotoolbox.org/api/v1/data/{ASSET_UID}?format=json",
-    f"https://kf.kobotoolbox.org/assets/{ASSET_UID}/submissions.json",
-    f"https://kc.humanitarianresponse.info/api/v1/data/{ASSET_UID}?format=json"
-]
+if uploaded_file is None:
+    st.info("👈 Please upload your latest Kobo Excel or CSV export in the sidebar to load the map.")
+    st.stop()
 
-@st.cache_data(ttl=300)  # Fetches fresh data every 5 minutes
-def load_kobo_data():
-    headers = {"Authorization": f"Token {API_TOKEN}"}
-    errors = []
-    
-    for url in ENDPOINTS:
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                payload = response.json()
-                if isinstance(payload, dict):
-                    results = payload.get('results', payload.get('value', []))
-                elif isinstance(payload, list):
-                    results = payload
-                else:
-                    results = []
-                
-                if results and len(results) > 0:
-                    return pd.DataFrame(results)
-            else:
-                errors.append(f"<b>URL:</b> {url} | <b>Status:</b> {response.status_code}")
-        except Exception as e:
-            errors.append(f"<b>URL:</b> {url} | <b>Exception:</b> {str(e)}")
+@st.cache_data
+def parse_uploaded_file(file):
+    try:
+        if file.name.endswith('.csv'):
+            return pd.read_csv(file)
+        else:
+            return pd.read_excel(file)
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        return pd.DataFrame()
 
-    st.error("### ⚠️ API Connection Info")
-    for err in errors:
-        st.markdown(f"- {err}", unsafe_allow_html=True)
-        
-    st.info("If status codes show 401 or 403 above, refresh your API Token at [kf.kobotoolbox.org/token/](https://kf.kobotoolbox.org/token/).")
-    return pd.DataFrame()
-
-# Sidebar Controls
-st.sidebar.header("⚙️ Data Settings")
-if st.sidebar.button("🔄 Refresh Data From Kobo"):
-    st.cache_data.clear()
-    st.rerun()
-
-with st.spinner("Connecting to KoboToolbox and fetching live submissions..."):
-    df_raw = load_kobo_data()
+df_raw = parse_uploaded_file(uploaded_file)
 
 if df_raw.empty:
-    st.warning("No data retrieved from KoboToolbox. Check API connection details above.")
+    st.warning("The uploaded file is empty or could not be parsed.")
     st.stop()
 
 # 3. DATA CLEANING & TRANSFORMATION
@@ -88,7 +59,7 @@ officer_col = officer_cols[0] if officer_cols else df.columns[0]
 df['officer'] = df[officer_col].astype(str).str.strip().replace(fo_clean).str.title()
 
 # Time & Operational Date Adjustment (5 AM cutoff)
-start_cols = [c for c in df.columns if 'start' in c.lower() or '_submission_time' in c.lower()]
+start_cols = [c for c in df.columns if 'start' in c.lower() or 'submission' in c.lower() or 'date' in c.lower()]
 start_col = start_cols[0] if start_cols else df.columns[0]
 df['start_dt'] = pd.to_datetime(df[start_col], errors='coerce').fillna(pd.Timestamp.now())
 
@@ -131,25 +102,29 @@ app_cols = [c for c in df.columns if 'approve' in c.lower()]
 app_col = app_cols[0] if app_cols else df.columns[0]
 df['approved'] = df[app_col].fillna('Unknown').astype(str).str.title()
 
-# Extract Latitude & Longitude (Handles separate columns, _geolocation, and GPS strings)
-lat_cols = [c for c in df.columns if 'latitude' in c.lower()]
-lon_cols = [c for c in df.columns if 'longitude' in c.lower()]
+# Extract Latitude & Longitude
+lat_cols = [c for c in df.columns if 'latitude' in c.lower() or 'lat' in c.lower()]
+lon_cols = [c for c in df.columns if 'longitude' in c.lower() or 'lng' in c.lower() or 'lon' in c.lower()]
 
 if lat_cols and lon_cols:
     df['lat'] = pd.to_numeric(df[lat_cols[0]], errors='coerce')
     df['lon'] = pd.to_numeric(df[lon_cols[0]], errors='coerce')
-elif '_geolocation' in df.columns:
-    df['lat'] = df['_geolocation'].apply(lambda x: float(x[0]) if isinstance(x, list) and len(x)>1 else np.nan)
-    df['lon'] = df['_geolocation'].apply(lambda x: float(x[1]) if isinstance(x, list) and len(x)>1 else np.nan)
-elif '_Farm_Location' in df.columns or 'Farm Location' in df.columns:
-    gps_col = '_Farm_Location' if '_Farm_Location' in df.columns else 'Farm Location'
-    df['lat'] = df[gps_col].apply(lambda x: float(str(x).split()[0]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
-    df['lon'] = df[gps_col].apply(lambda x: float(str(x).split()[1]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
 else:
-    df['lat'] = np.nan
-    df['lon'] = np.nan
+    # Check for combined GPS column (e.g. "_Farm_Location" or "GPS")
+    gps_cols = [c for c in df.columns if 'location' in c.lower() or 'gps' in c.lower() or 'geolocation' in c.lower()]
+    if gps_cols:
+        gps_col = gps_cols[0]
+        df['lat'] = df[gps_col].apply(lambda x: float(str(x).split()[0]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
+        df['lon'] = df[gps_col].apply(lambda x: float(str(x).split()[1]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
+    else:
+        df['lat'] = np.nan
+        df['lon'] = np.nan
 
 df_coords = df.dropna(subset=['lat', 'lon']).copy()
+
+if df_coords.empty:
+    st.error("No valid GPS coordinates found in the uploaded file. Ensure columns contain latitude/longitude or standard Kobo GPS string fields.")
+    st.stop()
 
 # 4. AUDIT CALCULATION (Haversine & Overlaps)
 df_coords = df_coords.sort_values(by=['officer', 'start_dt']).reset_index(drop=True)
