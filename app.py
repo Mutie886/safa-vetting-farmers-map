@@ -18,12 +18,12 @@ st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
 API_TOKEN = "558c639f2c31d384271394486b678df92f28a341"
 ASSET_UID = "azi42PaQTVCKXoD4dBA2o4"
 
-# Candidate API v2 URLs across both Non-Profit and Humanitarian Kobo instances
+# Comprehensive endpoint candidate list covering API v2, KPI submissions, and API v1 endpoints
 ENDPOINTS = [
-    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json",
-    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data/",
-    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data.json",
-    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data/"
+    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data/v1/submits/",
+    f"https://kc.kobotoolbox.org/api/v1/data/{ASSET_UID}?format=json",
+    f"https://kf.kobotoolbox.org/assets/{ASSET_UID}/submissions.json",
+    f"https://kc.humanitarianresponse.info/api/v1/data/{ASSET_UID}?format=json"
 ]
 
 @st.cache_data(ttl=300)  # Fetches fresh data every 5 minutes
@@ -36,19 +36,25 @@ def load_kobo_data():
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
                 payload = response.json()
-                results = payload.get('results', payload) if isinstance(payload, dict) else payload
+                if isinstance(payload, dict):
+                    results = payload.get('results', payload.get('value', []))
+                elif isinstance(payload, list):
+                    results = payload
+                else:
+                    results = []
+                
                 if results and len(results) > 0:
                     return pd.DataFrame(results)
             else:
-                errors.append(f"<b>URL:</b> {url}<br/><b>Status:</b> {response.status_code} | <b>Response:</b> {response.text[:150]}")
+                errors.append(f"<b>URL:</b> {url} | <b>Status:</b> {response.status_code}")
         except Exception as e:
-            errors.append(f"<b>URL:</b> {url}<br/><b>Exception:</b> {str(e)}")
+            errors.append(f"<b>URL:</b> {url} | <b>Exception:</b> {str(e)}")
 
-    st.error("### ⚠️ API Connection Debug Info")
+    st.error("### ⚠️ API Connection Info")
     for err in errors:
         st.markdown(f"- {err}", unsafe_allow_html=True)
         
-    st.info("💡 **Fixing Connection:** Check your Kobo dashboard URL to verify whether your account is on `kf.kobotoolbox.org` or `kobo.humanitarianresponse.info`, and confirm the Asset UID matches `azi42PaQTVCKXoD4dBA2o4`.")
+    st.info("If status codes show 401 or 403 above, refresh your API Token at [kf.kobotoolbox.org/token/](https://kf.kobotoolbox.org/token/).")
     return pd.DataFrame()
 
 # Sidebar Controls
@@ -77,12 +83,14 @@ fo_clean = {
     'Peter king\'ola': 'Peter King\'ola', 'Shadrack kieti': 'Shadrack Kieti'
 }
 
-officer_col = [c for c in df.columns if 'officer' in c.lower() or 'Field Officer' in c][0]
+officer_cols = [c for c in df.columns if 'officer' in c.lower() or 'Field Officer' in c]
+officer_col = officer_cols[0] if officer_cols else df.columns[0]
 df['officer'] = df[officer_col].astype(str).str.strip().replace(fo_clean).str.title()
 
 # Time & Operational Date Adjustment (5 AM cutoff)
-start_col = [c for c in df.columns if 'start' in c.lower()][0]
-df['start_dt'] = pd.to_datetime(df[start_col])
+start_cols = [c for c in df.columns if 'start' in c.lower() or '_submission_time' in c.lower()]
+start_col = start_cols[0] if start_cols else df.columns[0]
+df['start_dt'] = pd.to_datetime(df[start_col], errors='coerce').fillna(pd.Timestamp.now())
 
 def assign_op_date_and_day(dt):
     op_dt = dt - pd.Timedelta(days=1) if dt.hour < 5 else dt
@@ -94,25 +102,33 @@ df['day_name'] = [r[1] for r in res]
 df['time_visited'] = df['start_dt'].dt.strftime('%I:%M %p')
 
 # Farmer & Location Details
-farmer_col = [c for c in df.columns if 'farmer' in c.lower() or 'Farmer Name' in c][0]
+farmer_cols = [c for c in df.columns if 'farmer' in c.lower() or 'Farmer Name' in c]
+farmer_col = farmer_cols[0] if farmer_cols else df.columns[0]
 df['farmer'] = df[farmer_col].fillna('Unknown').astype(str).str.title()
 
-county_col = [c for c in df.columns if 'county' in c.lower()][0]
+county_cols = [c for c in df.columns if 'county' in c.lower()]
+county_col = county_cols[0] if county_cols else df.columns[0]
 df['county'] = df[county_col].astype(str).str.strip().str.title()
 
-loc_col = [c for c in df.columns if 'location' in c.lower() and 'farm' not in c.lower()][0]
+loc_cols = [c for c in df.columns if 'location' in c.lower() and 'farm' not in c.lower()]
+loc_col = loc_cols[0] if loc_cols else df.columns[0]
 df['location'] = df[loc_col].astype(str).str.strip().str.title()
 
-vill_col = [c for c in df.columns if 'village' in c.lower()][0]
+vill_cols = [c for c in df.columns if 'village' in c.lower()]
+vill_col = vill_cols[0] if vill_cols else df.columns[0]
 df['village'] = df[vill_col].astype(str).str.strip().str.title()
 
 # Acres Parsing
-acre_col = [c for c in df.columns if 'acre' in c.lower()][0]
-raw_acres = df[acre_col].astype(str).str.replace(',', '.', regex=False).str.strip()
-numeric_acres = pd.to_numeric(raw_acres, errors='coerce').fillna(0).clip(lower=0)
-df['acres'] = np.where(numeric_acres > 20.0, 0.0, numeric_acres)
+acre_cols = [c for c in df.columns if 'acre' in c.lower()]
+if acre_cols:
+    raw_acres = df[acre_cols[0]].astype(str).str.replace(',', '.', regex=False).str.strip()
+    numeric_acres = pd.to_numeric(raw_acres, errors='coerce').fillna(0).clip(lower=0)
+    df['acres'] = np.where(numeric_acres > 20.0, 0.0, numeric_acres)
+else:
+    df['acres'] = 0.0
 
-app_col = [c for c in df.columns if 'approve' in c.lower()][0]
+app_cols = [c for c in df.columns if 'approve' in c.lower()]
+app_col = app_cols[0] if app_cols else df.columns[0]
 df['approved'] = df[app_col].fillna('Unknown').astype(str).str.title()
 
 # Extract Latitude & Longitude (Handles separate columns, _geolocation, and GPS strings)
@@ -129,6 +145,9 @@ elif '_Farm_Location' in df.columns or 'Farm Location' in df.columns:
     gps_col = '_Farm_Location' if '_Farm_Location' in df.columns else 'Farm Location'
     df['lat'] = df[gps_col].apply(lambda x: float(str(x).split()[0]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
     df['lon'] = df[gps_col].apply(lambda x: float(str(x).split()[1]) if pd.notnull(x) and len(str(x).split())>=2 else np.nan)
+else:
+    df['lat'] = np.nan
+    df['lon'] = np.nan
 
 df_coords = df.dropna(subset=['lat', 'lon']).copy()
 
