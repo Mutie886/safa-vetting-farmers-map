@@ -2,18 +2,83 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import json
+import subprocess
+import sys
 import streamlit.components.v1 as components
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
-    page_title="OND 2026 Vetting Farmers Dashboard",
-    page_icon="🌾",
+    page_title="SAFA — OND 2026 Vetting Farmers Dashboard",
+    page_icon="🌱",
     layout="wide"
 )
 
-st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
+# 2. BRANDING & HEADER (SAFA LOGO INTEGRATION)
+st.markdown("""
+    <style>
+        .safa-header {
+            display: flex;
+            align-items: center;
+            background: linear-gradient(90deg, #0A3A2A 0%, #1E5E43 100%);
+            padding: 18px 25px;
+            border-radius: 10px;
+            color: white;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .safa-logo-box {
+            background-color: #FFFFFF;
+            padding: 8px 14px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 20px;
+        }
+        .safa-logo-text {
+            color: #0A3A2A;
+            font-weight: 900;
+            font-size: 26px;
+            letter-spacing: 2px;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+        }
+        .safa-logo-sub {
+            color: #27AE60;
+            font-size: 10px;
+            font-weight: 700;
+            display: block;
+            margin-top: -4px;
+            letter-spacing: 1px;
+        }
+        .safa-title {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+            color: #FFFFFF !important;
+        }
+        .safa-subtitle {
+            margin: 2px 0 0 0;
+            font-size: 13px;
+            color: #A3E4D7;
+            font-weight: 400;
+        }
+    </style>
+    
+    <div class="safa-header">
+        <div class="safa-logo-box">
+            <div>
+                <span class="safa-logo-text">SAFA</span>
+                <span class="safa-logo-sub">SUSTAINABLE AGRI</span>
+            </div>
+        </div>
+        <div>
+            <h1 class="safa-title">OND 2026 Vetting Farmers</h1>
+            <p class="safa-subtitle">Live GPS Audit & Field Analytics Dashboard</p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
 
-# 2. FILE UPLOADER SIDEBAR
+# 3. FILE UPLOADER SIDEBAR & EXCEL ENGINE PARSER
 st.sidebar.header("⚙️ Data Import")
 uploaded_file = st.sidebar.file_uploader(
     "Upload Kobo Dataset (.xlsx or .csv)", 
@@ -21,27 +86,31 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if uploaded_file is None:
-    st.info("👈 Please upload your latest Kobo Excel or CSV export in the sidebar to load the map.")
+    st.info("👈 Please upload your latest Kobo Excel or CSV export in the sidebar to view the analytics and map.")
     st.stop()
 
 @st.cache_data
 def parse_uploaded_file(file):
-    try:
-        if file.name.endswith('.csv'):
-            return pd.read_csv(file)
-        else:
-            return pd.read_excel(file)
-    except Exception as e:
-        st.error(f"Error reading file: {str(e)}")
-        return pd.DataFrame()
+    if file.name.endswith('.csv'):
+        return pd.read_csv(file)
+    else:
+        # Try reading with openpyxl; install dynamically if missing in deployment environment
+        try:
+            return pd.read_excel(file, engine='openpyxl')
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+            return pd.read_excel(file, engine='openpyxl')
+        except Exception as e:
+            st.error(f"Error parsing file: {str(e)}")
+            return pd.DataFrame()
 
 df_raw = parse_uploaded_file(uploaded_file)
 
 if df_raw.empty:
-    st.warning("The uploaded file is empty or could not be parsed.")
+    st.warning("The uploaded dataset is empty or could not be parsed.")
     st.stop()
 
-# 3. DATA CLEANING & TRANSFORMATION
+# 4. DATA CLEANING & TRANSFORMATION
 df = df_raw.copy()
 
 # Standardize Field Officer Names
@@ -110,7 +179,6 @@ if lat_cols and lon_cols:
     df['lat'] = pd.to_numeric(df[lat_cols[0]], errors='coerce')
     df['lon'] = pd.to_numeric(df[lon_cols[0]], errors='coerce')
 else:
-    # Check for combined GPS column (e.g. "_Farm_Location" or "GPS")
     gps_cols = [c for c in df.columns if 'location' in c.lower() or 'gps' in c.lower() or 'geolocation' in c.lower()]
     if gps_cols:
         gps_col = gps_cols[0]
@@ -123,10 +191,10 @@ else:
 df_coords = df.dropna(subset=['lat', 'lon']).copy()
 
 if df_coords.empty:
-    st.error("No valid GPS coordinates found in the uploaded file. Ensure columns contain latitude/longitude or standard Kobo GPS string fields.")
+    st.error("No valid GPS coordinates found in the file. Ensure columns contain Latitude/Longitude or standard Kobo GPS string formats.")
     st.stop()
 
-# 4. AUDIT CALCULATION (Haversine & Overlaps)
+# 5. AUDIT CALCULATION (Haversine & Overlaps)
 df_coords = df_coords.sort_values(by=['officer', 'start_dt']).reset_index(drop=True)
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -154,7 +222,7 @@ df_coords['audit_status'] = df_coords.apply(flag_status, axis=1)
 df_coords['dist_from_prev_km'] = df_coords['dist_from_prev_km'].fillna(0).round(2)
 df_coords['coord_key'] = df_coords['lat'].round(5).astype(str) + '_' + df_coords['lon'].round(5).astype(str)
 
-# 5. STREAMLIT FILTERS
+# 6. STREAMLIT FILTERS
 st.sidebar.header("🔍 Filters")
 counties = ["All"] + sorted(list(df_coords['county'].unique()))
 sel_county = st.sidebar.selectbox("Select County", counties)
@@ -183,7 +251,7 @@ col3.metric("Farmers Approved", len(filtered_df[filtered_df['approved'].isin(['Y
 overlap_groups_count = (filtered_df.groupby('coord_key').size() > 1).sum()
 col4.metric("GPS Overlap Groups", overlap_groups_count)
 
-# 6. LEAFLET MAP GENERATION
+# 7. LEAFLET MAP GENERATION
 records = filtered_df[['farmer', 'officer', 'county', 'location', 'village', 'acres', 'approved', 'lat', 'lon', 'date_str', 'day_name', 'time_visited', 'audit_status', 'dist_from_prev_km', 'coord_key']].to_dict(orient='records')
 records_json = json.dumps(records)
 
@@ -196,7 +264,6 @@ html_code = f"""
     <style>
         body {{ margin: 0; padding: 0; font-family: Arial; }}
         #map {{ height: 680px; width: 100%; border-radius: 8px; }}
-        .farmer-item {{ background: #f4f6f8; padding: 4px; margin: 3px 0; border-radius: 3px; font-size: 11px; }}
         .warning {{ color: #C00000; font-weight: bold; }}
     </style>
 </head>
@@ -208,7 +275,7 @@ html_code = f"""
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ maxZoom: 18 }}).addTo(map);
 
     var layerGroup = L.layerGroup().addTo(map);
-    var colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#008080', '#9a6324', '#e6beff', '#9a6324', '#800000'];
+    var colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#008080', '#9a6324', '#e6beff', '#800000'];
     var officers = [...new Set(rawData.map(d => d.officer))].sort();
     var colorMap = {{}};
     officers.forEach((o, i) => colorMap[o] = colors[i % colors.length]);
@@ -242,7 +309,7 @@ html_code = f"""
             }});
 
             var popup = `<div style="font-size:12px; width:220px;">
-                <b style="color:#1F4E78;">${{d.farmer}}</b> ${{items.length > 1 ? `<span style="background:#e1f5fe; color:#0288d1; padding:2px 4px; border-radius:3px; font-size:10px; float:right;">Pt ${{idx+1}} of ${{items.length}}</span>` : ''}}<br/>
+                <b style="color:#0A3A2A;">${{d.farmer}}</b> ${{items.length > 1 ? `<span style="background:#e1f5fe; color:#0288d1; padding:2px 4px; border-radius:3px; font-size:10px; float:right;">Pt ${{idx+1}} of ${{items.length}}</span>` : ''}}<br/>
                 <b>Officer:</b> ${{d.officer}}<br/>
                 <b>Date:</b> ${{d.date_str}} (${{d.day_name}})<br/>
                 <b>Time:</b> ${{d.time_visited}}<br/><hr style="margin:4px 0;"/>
@@ -267,5 +334,5 @@ html_code = f"""
 </html>
 """
 
-st.subheader(" Interactive Farmer Map")
+st.subheader("Interactive Farmer Map")
 components.html(html_code, height=700)
