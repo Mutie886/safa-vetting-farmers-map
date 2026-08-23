@@ -18,30 +18,37 @@ st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
 API_TOKEN = "558c639f2c31d384271394486b678df92f28a341"
 ASSET_UID = "azi42PaQTVCKXoD4dBA2o4"
 
-# Endpoint candidates for both Kobo instances (Non-profit & Humanitarian)
+# Candidate API v2 URLs across both Non-Profit and Humanitarian Kobo instances
 ENDPOINTS = [
     f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json",
-    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data.json"
+    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data/",
+    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data.json",
+    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data/"
 ]
 
 @st.cache_data(ttl=300)  # Fetches fresh data every 5 minutes
 def load_kobo_data():
     headers = {"Authorization": f"Token {API_TOKEN}"}
+    errors = []
     
     for url in ENDPOINTS:
         try:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
-                results = response.json().get('results', [])
-                if results:
+                payload = response.json()
+                results = payload.get('results', payload) if isinstance(payload, dict) else payload
+                if results and len(results) > 0:
                     return pd.DataFrame(results)
-            elif response.status_code == 401:
-                st.error("API Token rejected (401 Unauthorized). Please verify your token.")
-                return pd.DataFrame()
-        except Exception:
-            continue
+            else:
+                errors.append(f"<b>URL:</b> {url}<br/><b>Status:</b> {response.status_code} | <b>Response:</b> {response.text[:150]}")
+        except Exception as e:
+            errors.append(f"<b>URL:</b> {url}<br/><b>Exception:</b> {str(e)}")
 
-    st.error("Failed to retrieve data from KoboToolbox. Verify that the Asset UID and Token match your Kobo server account.")
+    st.error("### ⚠️ API Connection Debug Info")
+    for err in errors:
+        st.markdown(f"- {err}", unsafe_allow_html=True)
+        
+    st.info("💡 **Fixing Connection:** Check your Kobo dashboard URL to verify whether your account is on `kf.kobotoolbox.org` or `kobo.humanitarianresponse.info`, and confirm the Asset UID matches `azi42PaQTVCKXoD4dBA2o4`.")
     return pd.DataFrame()
 
 # Sidebar Controls
@@ -54,7 +61,7 @@ with st.spinner("Connecting to KoboToolbox and fetching live submissions..."):
     df_raw = load_kobo_data()
 
 if df_raw.empty:
-    st.warning("No data retrieved from KoboToolbox. Check API connection.")
+    st.warning("No data retrieved from KoboToolbox. Check API connection details above.")
     st.stop()
 
 # 3. DATA CLEANING & TRANSFORMATION
