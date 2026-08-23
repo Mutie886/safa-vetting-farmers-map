@@ -18,8 +18,8 @@ st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
 API_TOKEN = "558c639f2c31d384271394486b678df92f28a341"
 ASSET_UID = "azi42PaQTVCKXoD4dBA2o4"
 
-# Primary KC API v1 Endpoint
-DATA_URL = f"https://kc.kobotoolbox.org/api/v1/data/{ASSET_UID}.json"
+# Updated to Official KoboToolbox API v2 Endpoint (API v1 is deprecated)
+DATA_URL = f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json"
 
 @st.cache_data(ttl=300)  # Fetches fresh data every 5 minutes
 def load_kobo_data():
@@ -27,15 +27,10 @@ def load_kobo_data():
     try:
         response = requests.get(DATA_URL, headers=headers, timeout=30)
         if response.status_code == 200:
-            data = response.json()
-            return pd.DataFrame(data)
+            results = response.json().get('results', [])
+            return pd.DataFrame(results)
         else:
-            # Fallback to KF API v2 if KC v1 structure differs
-            v2_url = f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json"
-            res2 = requests.get(v2_url, headers=headers, timeout=30)
-            if res2.status_code == 200:
-                return pd.DataFrame(res2.json().get('results', []))
-            st.error(f"API Error {response.status_code}: {response.text}")
+            st.error(f"Kobo API Error {response.status_code}: {response.text}")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Connection failed: {str(e)}")
