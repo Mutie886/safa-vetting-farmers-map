@@ -4,11 +4,7 @@ import numpy as np
 import json
 import subprocess
 import sys
-import os
 import streamlit.components.v1 as components
-
-# Persistent file path
-DATA_FILE_PATH = "latest_data.csv"
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -16,6 +12,10 @@ st.set_page_config(
     page_icon="🌱",
     layout="wide"
 )
+
+# Initialize Session State for Data Persistence during active session
+if 'active_df' not in st.session_state:
+    st.session_state.active_df = None
 
 # 2. BRANDING & HEADER (SAFA LOGO INTEGRATION)
 st.markdown("""
@@ -82,15 +82,17 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# 3. ADMIN DATA UPDATE SECTION
-st.sidebar.header("⚙️ Admin Controls")
-admin_pin = st.sidebar.text_input("Enter Admin PIN to Update Data", type="password")
+# 3. ADMIN ACCESS & UPLOAD SECTION
+st.sidebar.header("🔑 Admin Access")
+admin_pin = st.sidebar.text_input("Enter Admin PIN", type="password", help="Type 1234 and press ENTER")
 
-# Set your custom admin passcode here (default: 1234)
 ADMIN_PASSCODE = "1234"
 
-if admin_pin == ADMIN_PASSCODE:
-    st.sidebar.success("Admin unlocked")
+# Validate passcode automatically
+is_admin = admin_pin == ADMIN_PASSCODE
+
+if is_admin:
+    st.sidebar.success("✅ Admin Access Granted")
     uploaded_file = st.sidebar.file_uploader(
         "Upload New Dataset (.xlsx or .csv)", 
         type=["xlsx", "xls", "csv"]
@@ -99,31 +101,29 @@ if admin_pin == ADMIN_PASSCODE:
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'):
-                new_df = pd.read_csv(uploaded_file)
+                st.session_state.active_df = pd.read_csv(uploaded_file)
             else:
                 try:
-                    new_df = pd.read_excel(uploaded_file, engine='openpyxl')
+                    st.session_state.active_df = pd.read_excel(uploaded_file, engine='openpyxl')
                 except ImportError:
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-                    new_df = pd.read_excel(uploaded_file, engine='openpyxl')
-            
-            # Save persistently locally
-            new_df.to_csv(DATA_FILE_PATH, index=False)
-            st.sidebar.success("Saved successfully! Reloading...")
-            st.cache_data.clear()
-            st.rerun()
+                    st.session_state.active_df = pd.read_excel(uploaded_file, engine='openpyxl')
+            st.sidebar.success("Data updated successfully!")
         except Exception as e:
-            st.sidebar.error(f"Failed to process file: {str(e)}")
+            st.sidebar.error(f"Error reading file: {str(e)}")
 
-# Load persistent dataset or warn if none uploaded yet
-if os.path.exists(DATA_FILE_PATH):
-    df_raw = pd.read_csv(DATA_FILE_PATH)
-else:
-    st.info("No active dataset uploaded yet. Enter the Admin PIN in the sidebar to perform the initial dataset upload.")
+# Ensure dataset exists before rendering dashboards
+if st.session_state.active_df is None:
+    if not is_admin:
+        st.warning("⚠️ No dataset loaded. Admin must enter the PIN in the sidebar and upload the Kobo data file.")
+    else:
+        st.info("👈 Please use the uploader in the left sidebar to upload the initial dataset.")
     st.stop()
 
+df_raw = st.session_state.active_df.copy()
+
 if df_raw.empty:
-    st.warning("The active dataset is empty.")
+    st.warning("The uploaded dataset is empty.")
     st.stop()
 
 # 4. DATA CLEANING & TRANSFORMATION
@@ -207,7 +207,7 @@ else:
 df_coords = df.dropna(subset=['lat', 'lon']).copy()
 
 if df_coords.empty:
-    st.error("No valid GPS coordinates found in saved file.")
+    st.error("No valid GPS coordinates found in file.")
     st.stop()
 
 # 5. AUDIT CALCULATION (Haversine & Overlaps)
