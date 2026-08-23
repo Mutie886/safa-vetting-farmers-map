@@ -18,23 +18,31 @@ st.title("🌾 OND 2026 Vetting Farmers — Live GPS Audit & Analytics")
 API_TOKEN = "558c639f2c31d384271394486b678df92f28a341"
 ASSET_UID = "azi42PaQTVCKXoD4dBA2o4"
 
-# Updated to Official KoboToolbox API v2 Endpoint (API v1 is deprecated)
-DATA_URL = f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json"
+# Endpoint candidates for both Kobo instances (Non-profit & Humanitarian)
+ENDPOINTS = [
+    f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_UID}/data.json",
+    f"https://kobo.humanitarianresponse.info/api/v2/assets/{ASSET_UID}/data.json"
+]
 
 @st.cache_data(ttl=300)  # Fetches fresh data every 5 minutes
 def load_kobo_data():
     headers = {"Authorization": f"Token {API_TOKEN}"}
-    try:
-        response = requests.get(DATA_URL, headers=headers, timeout=30)
-        if response.status_code == 200:
-            results = response.json().get('results', [])
-            return pd.DataFrame(results)
-        else:
-            st.error(f"Kobo API Error {response.status_code}: {response.text}")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Connection failed: {str(e)}")
-        return pd.DataFrame()
+    
+    for url in ENDPOINTS:
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                results = response.json().get('results', [])
+                if results:
+                    return pd.DataFrame(results)
+            elif response.status_code == 401:
+                st.error("API Token rejected (401 Unauthorized). Please verify your token.")
+                return pd.DataFrame()
+        except Exception:
+            continue
+
+    st.error("Failed to retrieve data from KoboToolbox. Verify that the Asset UID and Token match your Kobo server account.")
+    return pd.DataFrame()
 
 # Sidebar Controls
 st.sidebar.header("⚙️ Data Settings")
@@ -100,7 +108,7 @@ df['acres'] = np.where(numeric_acres > 20.0, 0.0, numeric_acres)
 app_col = [c for c in df.columns if 'approve' in c.lower()][0]
 df['approved'] = df[app_col].fillna('Unknown').astype(str).str.title()
 
-# Extract Latitude & Longitude (Handles both separate columns and Kobo GPS strings)
+# Extract Latitude & Longitude (Handles separate columns, _geolocation, and GPS strings)
 lat_cols = [c for c in df.columns if 'latitude' in c.lower()]
 lon_cols = [c for c in df.columns if 'longitude' in c.lower()]
 
