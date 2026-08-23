@@ -4,7 +4,11 @@ import numpy as np
 import json
 import subprocess
 import sys
+import os
 import streamlit.components.v1 as components
+
+# Persistent file path
+DATA_FILE_PATH = "latest_data.csv"
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(
@@ -78,36 +82,48 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# 3. FILE UPLOADER SIDEBAR & EXCEL ENGINE PARSER
-st.sidebar.header("⚙️ Data Import")
-uploaded_file = st.sidebar.file_uploader(
-    "Upload Kobo Dataset (.xlsx or .csv)", 
-    type=["xlsx", "xls", "csv"]
-)
+# 3. ADMIN DATA UPDATE SECTION
+st.sidebar.header("⚙️ Admin Controls")
+admin_pin = st.sidebar.text_input("Enter Admin PIN to Update Data", type="password")
 
-if uploaded_file is None:
-    st.info("👈 Please upload your latest Kobo Excel or CSV export in the sidebar to view the analytics and map.")
+# Set your custom admin passcode here (default: 1234)
+ADMIN_PASSCODE = "1234"
+
+if admin_pin == ADMIN_PASSCODE:
+    st.sidebar.success("Admin unlocked")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload New Dataset (.xlsx or .csv)", 
+        type=["xlsx", "xls", "csv"]
+    )
+    
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                new_df = pd.read_csv(uploaded_file)
+            else:
+                try:
+                    new_df = pd.read_excel(uploaded_file, engine='openpyxl')
+                except ImportError:
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+                    new_df = pd.read_excel(uploaded_file, engine='openpyxl')
+            
+            # Save persistently locally
+            new_df.to_csv(DATA_FILE_PATH, index=False)
+            st.sidebar.success("Saved successfully! Reloading...")
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Failed to process file: {str(e)}")
+
+# Load persistent dataset or warn if none uploaded yet
+if os.path.exists(DATA_FILE_PATH):
+    df_raw = pd.read_csv(DATA_FILE_PATH)
+else:
+    st.info("No active dataset uploaded yet. Enter the Admin PIN in the sidebar to perform the initial dataset upload.")
     st.stop()
 
-@st.cache_data
-def parse_uploaded_file(file):
-    if file.name.endswith('.csv'):
-        return pd.read_csv(file)
-    else:
-        # Try reading with openpyxl; install dynamically if missing in deployment environment
-        try:
-            return pd.read_excel(file, engine='openpyxl')
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-            return pd.read_excel(file, engine='openpyxl')
-        except Exception as e:
-            st.error(f"Error parsing file: {str(e)}")
-            return pd.DataFrame()
-
-df_raw = parse_uploaded_file(uploaded_file)
-
 if df_raw.empty:
-    st.warning("The uploaded dataset is empty or could not be parsed.")
+    st.warning("The active dataset is empty.")
     st.stop()
 
 # 4. DATA CLEANING & TRANSFORMATION
@@ -191,7 +207,7 @@ else:
 df_coords = df.dropna(subset=['lat', 'lon']).copy()
 
 if df_coords.empty:
-    st.error("No valid GPS coordinates found in the file. Ensure columns contain Latitude/Longitude or standard Kobo GPS string formats.")
+    st.error("No valid GPS coordinates found in saved file.")
     st.stop()
 
 # 5. AUDIT CALCULATION (Haversine & Overlaps)
